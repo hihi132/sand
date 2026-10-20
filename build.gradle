@@ -1,16 +1,15 @@
 plugins { id 'fabric-loom' version '1.14-SNAPSHOT' }
 
-version = '0.1.0'
+version = '0.2.0'
 base { archivesName = 'sandseller' }
 
 repositories {
     maven { url 'https://maven.fabricmc.net/' }
-    flatDir { dirs 'libs' }   // baritone-api-fabric-1_17_0.jar nam trong libs/
+    flatDir { dirs 'libs' }
 }
 
-// Tu dong tim ban moi nhat cua yarn va fabric-api cho Minecraft 1.21.11
 def latest = { String metaUrl, String suffixRegex ->
-    def xml = new XmlSlurper().parse(metaUrl)
+    def xml = new groovy.xml.XmlSlurper().parse(metaUrl)
     def all = xml.versioning.versions.version.collect { it.text() }.findAll { it ==~ suffixRegex }
     if (all.isEmpty()) throw new GradleException("Khong tim thay version cho ${metaUrl}")
     return all.last()
