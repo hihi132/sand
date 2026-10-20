@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "sandseller",
+  "version": "0.2.0",
+  "name": "Baritone SandSeller",
+  "description": "Baritone dao cat, tu an, tu danh quai, tu sua xeng bang EXP, du cat thi ban qua /order.",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.example.sandseller.SandSellerClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
