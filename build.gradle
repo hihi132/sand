@@ -1,0 +1,30 @@
+plugins { id 'fabric-loom' version '1.14-SNAPSHOT' }
+
+version = '0.1.0'
+base { archivesName = 'sandseller' }
+
+repositories {
+    maven { url 'https://maven.fabricmc.net/' }
+    flatDir { dirs 'libs' }   // baritone-api-fabric-1_17_0.jar nam trong libs/
+}
+
+// Tu dong tim ban moi nhat cua yarn va fabric-api cho Minecraft 1.21.11
+def latest = { String metaUrl, String suffixRegex ->
+    def xml = new XmlSlurper().parse(metaUrl)
+    def all = xml.versioning.versions.version.collect { it.text() }.findAll { it ==~ suffixRegex }
+    if (all.isEmpty()) throw new GradleException("Khong tim thay version cho ${metaUrl}")
+    return all.last()
+}
+def yarnVer = latest('https://maven.fabricmc.net/net/fabricmc/yarn/maven-metadata.xml', /1\.21\.11\+build\.\d+/)
+def fapiVer = latest('https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml', /.*\+1\.21\.11/)
+
+dependencies {
+    minecraft "com.mojang:minecraft:1.21.11"
+    mappings "net.fabricmc:yarn:${yarnVer}:v2"
+    modImplementation "net.fabricmc:fabric-loader:0.18.5"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${fapiVer}"
+    modImplementation name: 'baritone-api-fabric-1_17_0'
+}
+
+tasks.withType(JavaCompile).configureEach { options.release = 21; options.encoding = "UTF-8" }
+java { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21; withSourcesJar() }
