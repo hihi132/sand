@@ -19,6 +19,7 @@ public class Config {
     public boolean attackMobs = true; // tu danh quai
     public double attackRange = 3.0;  // tam danh (block)
     public boolean debug = true;      // in thong tin chi tiet trong chat
+    public int settleTicks = 10;      // cho man hinh dung yen bao nhieu tick truoc khi bam (server lag thi tang)
 
     public static Config I = new Config();
 
@@ -34,6 +35,7 @@ public class Config {
         if (I.sellCommand == null || I.sellCommand.isBlank()) I.sellCommand = "order";
         if (I.shopCommand == null || I.shopCommand.isBlank()) I.shopCommand = "shop";
         if (I.attackRange < 1.5 || I.attackRange > 6) I.attackRange = 3.0;
+        if (I.settleTicks < 2 || I.settleTicks > 100) I.settleTicks = 10;
     }
 
     public static void save() {

@@ -59,7 +59,8 @@ public class SandSellerClient implements ClientModInitializer {
 
     KeyBinding toggleKey, settingsKey;
     int fightIdle, fightPrevSlot;
-    String lastTitle = "", lastSig = "";
+    String lastTitle = "", lastSig = "", stableSig = "";
+    int stable;
     int sellCooldown, repairCooldown, softFails;
     S state = S.OFF;
     int wait, timeout, retries, orders, lastSync = -1;
@@ -137,6 +138,12 @@ public class SandSellerClient implements ClientModInitializer {
     // ---------- tien ich ----------
     int countSand(ClientPlayerEntity p) { return count(p, Items.SAND); }
 
+    int freeSlots(ClientPlayerEntity p) {
+        int n = 0;
+        for (int i = 0; i < 36; i++) if (p.getInventory().getStack(i).isEmpty()) n++;
+        return n;
+    }
+
     int count(ClientPlayerEntity p, Item item) {
         int n = 0;
         for (int i = 0; i < 36; i++) { ItemStack s = p.getInventory().getStack(i); if (s.isOf(item)) n += s.getCount(); }
@@ -187,7 +194,14 @@ public class SandSellerClient implements ClientModInitializer {
     boolean changed(MinecraftClient mc) {
         return mc.player.currentScreenHandler.syncId != lastSync || !title(mc).equals(lastTitle) || !sig(mc).equals(lastSig);
     }
-    void mark(MinecraftClient mc) { lastSync = mc.player.currentScreenHandler.syncId; lastTitle = title(mc); lastSig = containerOpen(mc) ? sig(mc) : ""; }
+    void mark(MinecraftClient mc) { lastSync = mc.player.currentScreenHandler.syncId; lastTitle = title(mc); lastSig = containerOpen(mc) ? sig(mc) : ""; stableSig = ""; stable = 0; }
+
+    /** Man hinh da dung yen (noi dung khong doi) du settleTicks tick -> an toan de bam. Chong bam nham khi server lag/sap xep lai. */
+    boolean settled(MinecraftClient mc) {
+        String sg = sig(mc);
+        if (sg.equals(stableSig)) stable++; else { stableSig = sg; stable = 0; }
+        return stable >= Config.I.settleTicks;
+    }
     void closeAll(MinecraftClient mc) {                                                  // = bam ESC
         if (mc.player != null) mc.player.closeHandledScreen();
         if (mc.currentScreen != null) mc.setScreen(null);
@@ -269,6 +283,56 @@ public class SandSellerClient implements ClientModInitializer {
         return idx;
     }
 
+    // ---------- chon don hang gia cao nhat ----------
+    static final java.util.regex.Pattern MONEY = java.util.regex.Pattern.compile("\\$\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([kKmMbB])?");
+    static final java.util.regex.Pattern NUM = java.util.regex.Pattern.compile("([0-9][0-9,]*(?:\\.[0-9]+)?)\\s*([kKmMbB])?");
+
+    static double scale(String num, String sfx) {
+        double v = Double.parseDouble(num.replace(",", ""));
+        if (sfx != null) switch (Character.toLowerCase(sfx.charAt(0))) { case 'k' -> v *= 1e3; case 'm' -> v *= 1e6; case 'b' -> v *= 1e9; default -> { } }
+        return v;
+    }
+
+    /** Doc gia/1 cat tu lore cua o don hang (uu tien dong co chu price/each/per/gia). -1 neu khong doc duoc. */
+    double price(ItemStack st) {
+        var lore = st.get(DataComponentTypes.LORE);
+        if (lore == null) return -1;
+        double fallback = -1;
+        for (Text line : lore.lines()) {
+            String t = line.getString(), n = norm(t);
+            boolean key = n.contains("price") || n.contains("each") || n.contains("per") || n.contains("gia") || n.contains("/");
+            try {
+                var m = MONEY.matcher(t);
+                while (m.find()) { double v = scale(m.group(1), m.group(2)); if (key) return v; if (fallback < 0) fallback = v; }
+                if (key) { var m2 = NUM.matcher(t); if (m2.find()) return scale(m2.group(1), m2.group(2)); }
+            } catch (Exception ignored) { }
+        }
+        return fallback;
+    }
+
+    /** Chon o don CAT co gia cao nhat; khong doc duoc gia thi lay o dau tien. */
+    int bestOrderSlot(ClientPlayerEntity p) {
+        ScreenHandler h = p.currentScreenHandler;
+        int size = h.slots.size() - 36, best = -1;
+        double bp = -1;
+        StringBuilder log = new StringBuilder();
+        for (int i = 0; i < size; i++) {
+            ItemStack st = h.getSlot(i).getStack();
+            if (!st.isOf(Items.SAND)) continue;
+            double pr = price(st);
+            if (log.length() < 150) log.append(i).append("=").append(pr).append(" ");
+            if (pr > bp) { bp = pr; best = i; }
+        }
+        dbg("Gia cac don cat: " + log);
+        if (best < 0) {
+            ItemStack f = h.getSlot(FIRST_ORDER_SLOT).getStack();
+            var lore = f.get(DataComponentTypes.LORE);
+            if (lore != null) { StringBuilder b = new StringBuilder(); for (Text l : lore.lines()) b.append(l.getString()).append(" | "); dbg("Lore o dau: " + b); }
+            return FIRST_ORDER_SLOT;
+        }
+        return best;
+    }
+
     // ---------- danh quai ----------
     HostileEntity nearestMob(MinecraftClient mc, ClientPlayerEntity p, double range) {
         if (mc.world == null) return null;
@@ -315,18 +379,29 @@ public class SandSellerClient implements ClientModInitializer {
                     state = S.FIGHT; return;
                 }
                 if (eatCooldown == 0 && needEat(p)) { baritone().getPathingBehavior().cancelEverything(); eatPhase = 0; state = S.EAT; return; }
-                if (sellCooldown == 0 && countSand(p) >= Config.I.sandLimit) {
+                boolean hasBottles = count(p, Items.EXPERIENCE_BOTTLE) > 0;
+                boolean full = freeSlots(p) == 0;
+                boolean repairNeeded = repairCooldown == 0 && needRepair(p);
+                // 1) Xeng sap hong va con chai EXP -> sua truoc (khong can o trong)
+                if (repairNeeded && hasBottles) {
                     baritone().getPathingBehavior().cancelEverything();
-                    say("Du " + Config.I.sandLimit + " cat, di ban");
+                    say("Xeng sap hong, ne chai EXP de sua");
+                    fracBeforeThrow = shovelFrac(p.getInventory().getStack(findShovel(p)));
+                    state = S.THROW_PREP; return;
+                }
+                // 2) Du cat HOAC tui day (khong nhat them duoc) -> di ban
+                int sand = countSand(p);
+                if (sellCooldown == 0 && sand > 0 && (sand >= Config.I.sandLimit || full)) {
+                    baritone().getPathingBehavior().cancelEverything();
+                    say((full ? "Tui day, " : "Du " + Config.I.sandLimit + " cat, ") + "di ban");
                     state = S.OPEN_ORDER; return;
                 }
-                if (repairCooldown == 0 && needRepair(p)) {
+                // 3) Xeng sap hong, het chai -> ra shop mua (can o trong de nhan chai)
+                if (repairNeeded && !hasBottles && !full) {
                     baritone().getPathingBehavior().cancelEverything();
-                    say("Xeng sap hong, di sua");
+                    say("Xeng sap hong, di mua chai EXP");
                     fracBeforeThrow = shovelFrac(p.getInventory().getStack(findShovel(p)));
-                    if (count(p, Items.EXPERIENCE_BOTTLE) > 0) state = S.THROW_PREP;
-                    else { shopRetries = 0; state = S.SHOP_OPEN; }
-                    return;
+                    shopRetries = 0; state = S.SHOP_OPEN; return;
                 }
                 if (!baritone().getMineProcess().isActive()) baritone().getMineProcess().mine(Blocks.SAND);
             }
@@ -383,20 +458,21 @@ public class SandSellerClient implements ClientModInitializer {
                 timeout = 0; state = S.WAIT_LIST; wait = 10;
             }
             case WAIT_LIST -> {
-                if (containerOpen(mc) && ready(p)) {
+                if (containerOpen(mc) && ready(p) && settled(mc)) {
                     dbg("Order mo: '" + title(mc) + "'");
-                    mark(mc); state = S.CLICK_FIRST; wait = 5;
+                    mark(mc); state = S.CLICK_FIRST; wait = 1;
                 } else if (++timeout > 60) state = S.OPEN_ORDER;
             }
             case CLICK_FIRST -> {
-                mc.interactionManager.clickSlot(p.currentScreenHandler.syncId, FIRST_ORDER_SLOT, 0, SlotActionType.PICKUP, p);
-                dbg("Da bam o dau tien (don gia cao nhat)");
+                int pick = bestOrderSlot(p);
+                dbg("Chon don slot " + pick + " gia " + price(p.currentScreenHandler.getSlot(pick).getStack()));
+                mc.interactionManager.clickSlot(p.currentScreenHandler.syncId, pick, 0, SlotActionType.PICKUP, p);
                 timeout = 0; state = S.WAIT_DEPOSIT; wait = 6;
             }
             case WAIT_DEPOSIT -> {
-                if (containerOpen(mc) && ready(p) && changed(mc)) {
+                if (containerOpen(mc) && ready(p) && changed(mc) && settled(mc)) {
                     dbg("Man nop mo: '" + title(mc) + "'");
-                    mark(mc); state = S.DEPOSIT; wait = 5;
+                    mark(mc); state = S.DEPOSIT; wait = 1;
                 } else if (++timeout > 60) { dbg("Khong thay man nop, thu lai"); closeAll(mc); state = S.OPEN_ORDER; }
             }
             case DEPOSIT -> {
