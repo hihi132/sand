@@ -59,7 +59,7 @@ public class SandSellerClient implements ClientModInitializer {
 
     KeyBinding toggleKey, settingsKey;
     int fightIdle, fightPrevSlot;
-    String lastTitle = "";
+    String lastTitle = "", lastSig = "";
     int sellCooldown, repairCooldown, softFails;
     S state = S.OFF;
     int wait, timeout, retries, orders, lastSync = -1;
@@ -172,10 +172,22 @@ public class SandSellerClient implements ClientModInitializer {
         }
         return false;
     }
-    boolean changed(MinecraftClient mc) {
-        return mc.player.currentScreenHandler.syncId != lastSync || !title(mc).equals(lastTitle);
+    /** Chu ky noi dung cua so (de nhan ra khi server doi man hinh ngay trong cung mot cua so). */
+    String sig(MinecraftClient mc) {
+        ScreenHandler h = mc.player.currentScreenHandler;
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < h.slots.size(); i++) {
+            Slot sl = h.getSlot(i);
+            if (sl.inventory == mc.player.getInventory()) continue;
+            ItemStack st = sl.getStack();
+            b.append(i).append(':').append(st.getItem()).append('x').append(st.getCount()).append(nameOf(st)).append('|');
+        }
+        return b.toString();
     }
-    void mark(MinecraftClient mc) { lastSync = mc.player.currentScreenHandler.syncId; lastTitle = title(mc); }
+    boolean changed(MinecraftClient mc) {
+        return mc.player.currentScreenHandler.syncId != lastSync || !title(mc).equals(lastTitle) || !sig(mc).equals(lastSig);
+    }
+    void mark(MinecraftClient mc) { lastSync = mc.player.currentScreenHandler.syncId; lastTitle = title(mc); lastSig = containerOpen(mc) ? sig(mc) : ""; }
     void closeAll(MinecraftClient mc) {                                                  // = bam ESC
         if (mc.player != null) mc.player.closeHandledScreen();
         if (mc.currentScreen != null) mc.setScreen(null);
