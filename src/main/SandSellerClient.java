@@ -12,11 +12,13 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.entity.Entity;
+import net.minecraft.registry.Registries;
 import net.minecraft.entity.mob.EndermanEntity;
 import net.minecraft.entity.mob.HostileEntity;
 import net.minecraft.entity.mob.ZombifiedPiglinEntity;
 import net.minecraft.util.math.Vec3d;
 import java.text.Normalizer;
+import java.util.HashSet;
 import java.util.List;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -53,7 +55,7 @@ public class SandSellerClient implements ClientModInitializer {
             Items.PUFFERFISH, Items.ENCHANTED_GOLDEN_APPLE, Items.CHORUS_FRUIT);
 
     enum S { OFF, MINING, FIGHT, EAT,
-             OPEN_ORDER, WAIT_LIST, CLICK_FIRST, WAIT_DEPOSIT, DEPOSIT, WAIT_CONFIRM, CLICK_CONFIRM, FINISH,
+             OPEN_ORDER, WAIT_LIST, CLICK_FIRST, WAIT_DEPOSIT, DEPOSIT, PRE_CONFIRM, WAIT_CONFIRM, CLICK_CONFIRM, FINISH,
              SHOP_OPEN, SHOP_MAIN, SHOP_GEAR, SHOP_AMOUNT, SHOP_CONFIRM, SHOP_DONE,
              THROW_PREP, THROWING, THROW_RESTORE }
 
@@ -62,7 +64,9 @@ public class SandSellerClient implements ClientModInitializer {
     String lastTitle = "", lastSig = "", stableSig = "";
     int stable;
     int sellCooldown, repairCooldown, softFails;
-    long startMs; int mined, lastSand = -1, hudTick;
+    int depSrc = -1, depTarget = -1, depTries, lastBtn = -1;
+    final HashSet<Integer> badSlots = new HashSet<>();
+    long startMs; int mined, lastSand = -1, hudTick, dbgTick, confirmTries;
     S state = S.OFF;
     int wait, timeout, retries, orders, lastSync = -1;
     boolean closedOnce;
@@ -285,6 +289,32 @@ public class SandSellerClient implements ClientModInitializer {
         return idx;
     }
 
+    /** Nut giao/xac nhan: theo ten, neu khong co thi o kinh/block mau xanh la (lime/green/emerald). */
+    int findButton(ClientPlayerEntity p) {
+        int t = findContainerSlot(p, st -> { String n = nameOf(st);
+            return n.contains("xac nhan") || n.contains("confirm") || n.contains("giao") || n.contains("deliver")
+                || n.contains("submit") || n.contains("accept") || n.contains("dong y") || n.contains("hoan tat"); });
+        if (t >= 0) return t;
+        ScreenHandler h = p.currentScreenHandler;
+        for (int i = h.slots.size() - 37; i >= 0; i--) {
+            ItemStack st = h.getSlot(i).getStack();
+            if (st.isEmpty()) continue;
+            String id = Registries.ITEM.getId(st.getItem()).getPath();
+            if (id.contains("lime") || id.contains("green") || st.isOf(Items.EMERALD_BLOCK)) return i;
+        }
+        return -1;
+    }
+
+    /** O khong rong va khong phai cat o khu vuc duoi cung cua cua so = nut xac nhan. */
+    int buttonFallback(ClientPlayerEntity p) {
+        ScreenHandler h = p.currentScreenHandler;
+        for (int i = h.slots.size() - 37; i >= 0; i--) {
+            ItemStack st = h.getSlot(i).getStack();
+            if (!st.isEmpty() && !st.isOf(Items.SAND)) return i;
+        }
+        return -1;
+    }
+
     // ---------- thong tin hien tren man hinh (giong HUD cua AutoSand) ----------
     void updateStats(ClientPlayerEntity p) {
         if (state != S.MINING) return;
@@ -298,7 +328,7 @@ public class SandSellerClient implements ClientModInitializer {
             case MINING -> "Đào";
             case FIGHT -> "Đánh quái";
             case EAT -> "Ăn";
-            case OPEN_ORDER, WAIT_LIST, CLICK_FIRST, WAIT_DEPOSIT, DEPOSIT, WAIT_CONFIRM, CLICK_CONFIRM, FINISH -> "Bán";
+            case OPEN_ORDER, WAIT_LIST, CLICK_FIRST, WAIT_DEPOSIT, DEPOSIT, PRE_CONFIRM, WAIT_CONFIRM, CLICK_CONFIRM, FINISH -> "Bán";
             case SHOP_OPEN, SHOP_MAIN, SHOP_GEAR, SHOP_AMOUNT, SHOP_CONFIRM, SHOP_DONE -> "Mua EXP";
             case THROW_PREP, THROWING, THROW_RESTORE -> "Sửa xẻng";
             default -> "Chờ";
@@ -419,6 +449,8 @@ public class SandSellerClient implements ClientModInitializer {
                 boolean hasBottles = count(p, Items.EXPERIENCE_BOTTLE) > 0;
                 boolean full = freeSlots(p) == 0;
                 boolean repairNeeded = repairCooldown == 0 && needRepair(p);
+                if (repairCooldown > 0 && ++dbgTick % 100 == 0 && needRepair(p))
+                    dbg("Xeng thap nhung dang cho thu lai sua (" + (repairCooldown / 20) + "s)");
                 // 1) Xeng sap hong va con chai EXP -> sua truoc (khong can o trong)
                 if (repairNeeded && hasBottles) {
                     baritone().getPathingBehavior().cancelEverything();
@@ -509,39 +541,55 @@ public class SandSellerClient implements ClientModInitializer {
             case WAIT_DEPOSIT -> {
                 if (containerOpen(mc) && ready(p) && changed(mc) && settled(mc)) {
                     dbg("Man nop mo: '" + title(mc) + "'");
-                    mark(mc); state = S.DEPOSIT; wait = 1;
+                    mark(mc); badSlots.clear(); depSrc = -1; depTarget = -1; depTries = 0;
+                    state = S.DEPOSIT; wait = 1;
                 } else if (++timeout > 60) { dbg("Khong thay man nop, thu lai"); closeAll(mc); state = S.OPEN_ORDER; }
             }
+            // Man "BO VAT PHAM VAO DE GIAO": phai nhat chong cat len chuot roi bam vao o trong de dat xuong (shift-click khong dung duoc)
             case DEPOSIT -> {
                 ScreenHandler h = p.currentScreenHandler;
-                int clicks = 0;
-                for (int i = 0; i < h.slots.size() && clicks < 3; i++) {
+                int cs = h.slots.size() - 36;
+                if (!h.getCursorStack().isEmpty()) {                          // dang cam cat tren chuot -> dat vao o trong
+                    int target = -1;
+                    for (int i = 0; i < Math.max(1, cs - 9); i++) if (h.getSlot(i).getStack().isEmpty()) { target = i; break; }
+                    if (target < 0) { dbg("Het cho de dat cat"); mark(mc); state = S.PRE_CONFIRM; wait = 3; return; }
+                    mc.interactionManager.clickSlot(h.syncId, target, 0, SlotActionType.PICKUP, p);
+                    wait = 3; return;
+                }
+                int src = -1;                                                   // chuot trong -> nhat 1 chong cat tu tui
+                for (int i = 0; i < h.slots.size(); i++) {
                     Slot sl = h.getSlot(i);
-                    if (sl.inventory == p.getInventory() && sl.getStack().isOf(Items.SAND)) {
-                        mc.interactionManager.clickSlot(h.syncId, i, 0, SlotActionType.QUICK_MOVE, p);
-                        clicks++;
-                    }
+                    if (sl.inventory == p.getInventory() && sl.getStack().isOf(Items.SAND)) { src = i; break; }
                 }
-                if (clicks == 0) { dbg("Da nop xong cat"); timeout = 0; closedOnce = false; state = S.WAIT_CONFIRM; wait = 6; }
-                else wait = 2;
+                if (src < 0) { dbg("Da dat xong cat"); mark(mc); state = S.PRE_CONFIRM; wait = 3; return; }
+                mc.interactionManager.clickSlot(h.syncId, src, 0, SlotActionType.PICKUP, p);
+                wait = 3;
             }
-            case WAIT_CONFIRM -> {
-                timeout++;
-                if (containerOpen(mc) && ready(p) && changed(mc)) {                  // hien man xac nhan
-                    dbg("Man xac nhan: '" + title(mc) + "'");
-                    mark(mc); state = S.CLICK_CONFIRM; wait = 5; return;
-                }
-                if (timeout == 20 && containerOpen(mc) && !closedOnce) { closedOnce = true; dbg("Bam ESC dong man nop"); closeAll(mc); }
-                else if (timeout > 80) { dbg("Khong co man xac nhan -> coi nhu xong"); state = S.FINISH; }
+            case PRE_CONFIRM -> {                                               // doi nut chuyen sang xanh roi moi bam
+                if (!containerOpen(mc)) { state = S.FINISH; return; }
+                if (settled(mc)) { confirmTries = 0; state = S.CLICK_CONFIRM; }
             }
             case CLICK_CONFIRM -> {
                 dbg("Slot: " + dump(p));
                 int t = findContainerSlot(p, st -> { String n = nameOf(st);
                     return n.contains("xac nhan") || n.contains("confirm") || n.contains("accept") || n.contains("dong y")
-                        || st.isOf(Items.LIME_STAINED_GLASS_PANE) || st.isOf(Items.EMERALD_BLOCK); });
-                if (t < 0) { soft(mc, "khong tim thay nut xac nhan (xem dong Slot o tren)", false); return; }
-                clickContainer(mc, t);
-                state = S.FINISH; wait = 20;
+                        || n.contains("deliver") || n.contains("giao hang")
+                        || st.isOf(Items.LIME_STAINED_GLASS_PANE) || st.isOf(Items.GREEN_STAINED_GLASS_PANE) || st.isOf(Items.EMERALD_BLOCK); });
+                if (t < 0 && confirmTries == 0) t = buttonFallback(p);          // o duy nhat khong phai cat (nut o hang duoi)
+                if (t < 0) {
+                    if (confirmTries == 0) soft(mc, "khong tim thay nut xac nhan (xem dong Slot o tren)", false);
+                    else state = S.FINISH;
+                    return;
+                }
+                dbg("Bam nut xac nhan o slot " + t);
+                mark(mc); clickContainer(mc, t); confirmTries++;
+                timeout = 0; state = S.WAIT_CONFIRM; wait = 12;
+            }
+            case WAIT_CONFIRM -> {
+                timeout++;
+                if (!containerOpen(mc)) { state = S.FINISH; return; }           // server da dong -> xong
+                if (confirmTries < 3 && changed(mc) && settled(mc)) { dbg("Hien man xac nhan tiep: '" + title(mc) + "'"); state = S.CLICK_CONFIRM; return; }
+                if (timeout > 60) { dbg("Het gio cho -> dong cua so (ESC)"); state = S.FINISH; }
             }
             case FINISH -> {
                 closeAll(mc);                                                         // ESC
