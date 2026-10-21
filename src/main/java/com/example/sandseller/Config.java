@@ -18,6 +18,7 @@ public class Config {
     public int repairStop = 80;       // % do ben: dung sua khi >=
     public boolean attackMobs = true; // tu danh quai
     public double attackRange = 3.0;  // tam danh (block)
+    public boolean debug = true;      // in thong tin chi tiet trong chat
 
     public static Config I = new Config();
 

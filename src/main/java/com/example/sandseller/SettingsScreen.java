@@ -21,7 +21,7 @@ public class SettingsScreen extends Screen {
         this.clearChildren();
         Config c = Config.I;
         int cx = this.width / 2;
-        int y = Math.max(4, this.height / 2 - 125);
+        int y = Math.max(4, this.height / 2 - 137);
         final int STEP = 22;
 
         addBtn(cx - 130, y, 260, (mod.isRunning() ? "§aĐANG CHẠY §7(bấm để dừng)" : "§cĐANG TẮT §7(bấm để chạy)"),
@@ -51,6 +51,9 @@ public class SettingsScreen extends Screen {
         stepper(cx, y, "Tầm đánh: §e" + c.attackRange + " block",
                 () -> { c.attackRange = Math.max(2.0, c.attackRange - 0.5); Config.save(); build(); },
                 () -> { c.attackRange = Math.min(4.5, c.attackRange + 0.5); Config.save(); build(); });
+        y += STEP;
+        addBtn(cx - 130, y, 260, "Báo chi tiết (debug) trong chat: " + (c.debug ? "§aBẬT" : "§cTẮT"),
+                () -> { c.debug = !c.debug; Config.save(); build(); });
         y += STEP;
         addLabel(cx - 130, y, 90, "Lệnh bán:");
         TextFieldWidget sell = new TextFieldWidget(this.textRenderer, cx - 35, y, 165, 20, Text.empty());
